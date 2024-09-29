@@ -10,11 +10,6 @@
             "request": "launch",
             "mode": "auto",
             "program": "${fileDirname}",
-            "args": [
-                "xx",
-                "yy",
-                "zz"
-            ]
         }
     ]
 }
