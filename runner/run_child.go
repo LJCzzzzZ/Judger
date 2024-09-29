@@ -2,10 +2,10 @@ package main
 
 import (
 	// "log"
+	"os"
 	"syscall"
 	"unsafe"
 
-	libseccomp "github.com/seccomp/libseccomp-golang"
 	"golang.org/x/sys/unix"
 )
 
@@ -18,36 +18,106 @@ func afterFork()
 //go:linkname afterForkInChild syscall.runtime_AfterForkInChild
 func afterForkInChild()
 
+type rlimit struct {
+	resource int
+	rlim     syscall.Rlimit
+}
+
 // ForkAndLoadSeccomp will fork, load seccomp and execv and being traced by ptrace
 // Reference to src/syscall/exec_linux.go
 // The runtime OS thread must be locked before calling this function
 //
 //go:noinline
 //go:norace
-func ForkAndLoadSeccomp(args []string, filter *libseccomp.ScmpFilter) (int, error) {
+func (r *ProgramRunner) StartChild() (int, error) {
 	var (
 		err1 syscall.Errno
+		bpf  *syscall.SockFprog
 	)
 	// make exec args
-	argv0, err := syscall.BytePtrFromString(args[0])
+	argv0, err := syscall.BytePtrFromString(r.Args[0])
 	if err != nil {
 		return 0, err
 	}
-	argv, err := syscall.SlicePtrFromStrings(args)
+
+	argv, err := syscall.SlicePtrFromStrings(r.Args)
 	if err != nil {
 		return 0, err
 	}
-	envv, err := syscall.SlicePtrFromStrings([]string{""})
+	envv, err := syscall.SlicePtrFromStrings(r.Env)
 	if err != nil {
 		return 0, err
 	}
 
 	// make bpf using libseccomp
-	bpf, err := FilterToBPF(filter)
-	if err != nil {
-		return 0, err
+	if r.Filter != nil {
+		bpf, err = FilterToBPF(r.Filter)
+		if err != nil {
+			return 0, err
+		}
 	}
 
+	rlimits := []rlimit{
+		{
+			resource: syscall.RLIMIT_CPU,
+			rlim: syscall.Rlimit{
+				Cur: r.TimeLimit,
+				Max: r.RealTimeLimit,
+			},
+		},
+		{
+			resource: syscall.RLIMIT_FSIZE,
+			rlim: syscall.Rlimit{
+				Cur: r.OutputLimit << 20,
+				Max: r.OutputLimit << 20,
+			},
+		},
+		{
+			resource: syscall.RLIMIT_STACK,
+			rlim: syscall.Rlimit{
+				Cur: r.StackLimit << 20,
+				Max: r.StackLimit << 20,
+			},
+		},
+	}
+
+	var dir *byte
+	if r.WorkPath != "" {
+		dir, err = syscall.BytePtrFromString(r.WorkPath)
+		if err != nil {
+			return 0, err
+		}
+	}
+	files := make([]*os.File, 3)
+	if r.InputFileName != "" {
+		files[0], err = os.OpenFile(r.InputFileName, os.O_RDONLY, 0755)
+		if err != nil {
+			return 0, err
+		}
+		defer files[0].Close()
+	}
+	if r.OutputFileName != "" {
+		files[1], err = os.OpenFile(r.OutputFileName, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0755)
+		if err != nil {
+			return 0, err
+		}
+		defer files[1].Close()
+	}
+	if r.ErrorFileName != "" {
+		files[2], err = os.OpenFile(r.ErrorFileName, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0755)
+		if err != nil {
+			return 0, err
+		}
+		defer files[2].Close()
+	}
+	fds := make([]uintptr, 3)
+	for i, f := range files {
+		if f != nil {
+			fds[i] = f.Fd()
+		}
+	}
+
+	syscall.ForkLock.Lock()
 	// About to call fork.
 	// No more allocation or calls of non-assembly functions.
 	beforeFork()
@@ -65,6 +135,29 @@ func ForkAndLoadSeccomp(args []string, filter *libseccomp.ScmpFilter) (int, erro
 	// In child process
 	afterForkInChild()
 	// Notice: cannot call any functions beyond this point
+
+	for _, rlim := range rlimits {
+		_, _, err1 = syscall.RawSyscall(syscall.SYS_SETRLIMIT, uintptr(rlim.resource), uintptr(unsafe.Pointer(&rlim.rlim)), 0)
+		if err1 != 0 {
+			goto childerror
+		}
+	}
+
+	if dir != nil {
+		_, _, err1 = syscall.RawSyscall(syscall.SYS_CHDIR, uintptr(unsafe.Pointer(dir)), 0, 0)
+		if err1 != 0 {
+			goto childerror
+		}
+	}
+
+	for i, fd := range fds {
+		if fd != 0 {
+			_, _, err1 = syscall.RawSyscall(syscall.SYS_DUP, fd, uintptr(i), 0)
+			if err1 != 0 {
+				goto childerror
+			}
+		}
+	}
 
 	// Enable ptrace
 	_, _, err1 = syscall.RawSyscall(syscall.SYS_PTRACE, uintptr(syscall.PTRACE_TRACEME), 0, 0)
