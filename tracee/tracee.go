@@ -1,10 +1,10 @@
-package main
+package tracee
 
 import (
 	libseccomp "github.com/seccomp/libseccomp-golang"
 )
 
-type ProgramRunner struct {
+type Runner struct {
 	TimeLimit     uint64
 	RealTimeLimit uint64
 	MemoryLimit   uint64
@@ -23,8 +23,8 @@ type ProgramRunner struct {
 	Filter *libseccomp.ScmpFilter
 }
 
-func NewProgramRunner() ProgramRunner {
-	return ProgramRunner{
+func NewRunner() Runner {
+	return Runner{
 		TimeLimit:     1,
 		RealTimeLimit: 0,
 		MemoryLimit:   256,
@@ -33,7 +33,7 @@ func NewProgramRunner() ProgramRunner {
 	}
 }
 
-func (r *ProgramRunner) verify() {
+func (r *Runner) verify() {
 	if r.RealTimeLimit < r.TimeLimit {
 		r.RealTimeLimit = r.TimeLimit + 2
 	}

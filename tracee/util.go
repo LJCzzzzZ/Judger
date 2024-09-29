@@ -1,4 +1,4 @@
-package main
+package tracee
 
 import (
 	"io/ioutil"
@@ -27,7 +27,7 @@ func FilterToBPF(filter *libseccomp.ScmpFilter) (*syscall.SockFprog, error) {
 	}
 
 	return &syscall.SockFprog{
-		Len: uint16(len(bin) / 8),
+		Len:    uint16(len(bin) / 8),
 		Filter: (*syscall.SockFilter)(unsafe.Pointer(&bin[0])),
 	}, nil
 }
